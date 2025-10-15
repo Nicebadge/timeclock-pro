@@ -406,16 +406,12 @@ export default function App() {
 
             <div className="mt-8 p-4 bg-blue-50 rounded-lg">
               <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center">
-                <Database className="w-4 h-4 mr-1" />
-                Demo Employee Numbers:
+                <Shield className="w-4 h-4 mr-1" />
+                Instructions:
               </p>
               <div className="text-xs text-gray-600 space-y-1">
-                <p><strong>101</strong> - John Smith</p>
-                <p><strong>102</strong> - Sarah Johnson</p>
-                <p><strong>103</strong> - Mike Davis</p>
-                <p className="pt-2 border-t border-blue-200 mt-2">
-                  <strong>admin</strong> - Admin Access (password: 9999)
-                </p>
+                <p><strong>Employees:</strong> Enter your employee number to clock in/out</p>
+                <p><strong>Administrators:</strong> Enter "admin" for management access</p>
               </div>
             </div>
           </div>
