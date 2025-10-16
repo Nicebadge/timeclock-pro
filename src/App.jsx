@@ -25,6 +25,7 @@ export default function App() {
   );
   const [exportEndDate, setExportEndDate] = useState(new Date().toISOString().split('T')[0]);
 
+  const [punchConfirmation, setPunchConfirmation] = useState(null);
   // Alert helper
   const showAlert = (type, message) => {
     setAlert({ type, message });
@@ -201,6 +202,63 @@ export default function App() {
           setLoading(false);
           return;
         }
+
+        // Auto-logout after 60 seconds of inactivity
+useEffect(() => {
+  if (view === 'employee' && currentUser) {
+    let timer = null;
+    
+    const resetTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        showAlert('info', 'Auto-logout due to inactivity');
+        setTimeout(() => handleLogout(), 500);
+      }, 60000);
+    };
+
+    const events = ['mousedown', 'keydown', 'touchstart', 'mousemove'];
+    events.forEach(event => window.addEventListener(event, resetTimer));
+    resetTimer();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      events.forEach(event => window.removeEventListener(event, resetTimer));
+    };
+  }
+}, [view, currentUser]);
+
+// Keyboard shortcuts
+useEffect(() => {
+  const handleKeyPress = (e) => {
+    if (view !== 'employee' || loading || e.target.tagName === 'INPUT') return;
+
+    const status = getCurrentStatus(currentUser?.id);
+    const isClockedIn = status !== 'Clocked Out';
+    const isOnBreak = status.includes('Break');
+
+    switch(e.key) {
+      case '1':
+        if (!isClockedIn || (!isOnBreak && isClockedIn)) handleClockAction(isClockedIn ? 'out' : 'in');
+        break;
+      case '2':
+        if (isClockedIn && !isOnBreak) handleClockAction('in', 'meal');
+        break;
+      case '3':
+        if (isClockedIn && !isOnBreak) handleClockAction('in', 'rest');
+        break;
+      case '4':
+        if (isOnBreak) handleClockAction('out');
+        break;
+      case '0':
+      case 'Escape':
+        handleLogout();
+        break;
+    }
+  };
+
+  window.addEventListener('keydown', handleKeyPress);
+  return () => window.removeEventListener('keydown', handleKeyPress);
+}, [view, currentUser, loading, timeEntries]);
 
         const { error } = await supabase
           .from('time_entries')
