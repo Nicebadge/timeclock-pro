@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, Shield, Database, Download } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, Shield, Database, Download, Edit2, Trash2, Plus, AlertCircle, X, Save } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // Get Supabase credentials from environment variables
@@ -25,6 +25,33 @@ export default function App() {
   );
   const [exportEndDate, setExportEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [punchConfirmation, setPunchConfirmation] = useState(null);
+
+  // Manage Entries state
+  const [filterEmployee, setFilterEmployee] = useState('all');
+  const [filterStartDate, setFilterStartDate] = useState(
+    new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0]
+  );
+  const [filterEndDate, setFilterEndDate] = useState(new Date().toISOString().split('T')[0]);
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterType, setFilterType] = useState('all');
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null);
+  const [editForm, setEditForm] = useState({
+    clock_in: '',
+    clock_out: '',
+    break_type: null,
+    notes: ''
+  });
+  const [addForm, setAddForm] = useState({
+    employee_id: '',
+    date: new Date().toISOString().split('T')[0],
+    clock_in_time: '07:00',
+    clock_out_time: '16:00',
+    break_type: null,
+    notes: ''
+  });
 
   // Auto-logout after 60 seconds of inactivity
   useEffect(() => {
@@ -215,6 +242,36 @@ export default function App() {
     if (employeesResult.data) setEmployees(employeesResult.data);
   };
 
+  // Load filtered entries for manage view
+  const loadFilteredEntries = async () => {
+    let query = supabase
+      .from('time_entries')
+      .select('*')
+      .gte('clock_in', filterStartDate + 'T00:00:00')
+      .lte('clock_in', filterEndDate + 'T23:59:59');
+
+    if (filterEmployee !== 'all') {
+      query = query.eq('employee_id', filterEmployee);
+    }
+
+    if (filterStatus === 'open') {
+      query = query.is('clock_out', null);
+    } else if (filterStatus === 'closed') {
+      query = query.not('clock_out', 'is', null);
+    }
+
+    if (filterType === 'work') {
+      query = query.is('break_type', null);
+    } else if (filterType === 'meal') {
+      query = query.eq('break_type', 'meal');
+    } else if (filterType === 'rest') {
+      query = query.eq('break_type', 'rest');
+    }
+
+    const { data, error } = await query.order('clock_in', { ascending: false });
+    if (data) setTimeEntries(data);
+  };
+
   // Clock in/out handler
   const handleClockAction = async (action, breakType = null) => {
     setLoading(true);
@@ -287,6 +344,125 @@ export default function App() {
     }
   };
 
+  // Edit entry handler
+  const handleEditEntry = (entry) => {
+    setEditingEntry(entry);
+    setEditForm({
+      clock_in: entry.clock_in.substring(0, 16), // Format for datetime-local input
+      clock_out: entry.clock_out ? entry.clock_out.substring(0, 16) : '',
+      break_type: entry.break_type,
+      notes: entry.notes || ''
+    });
+    setShowEditModal(true);
+  };
+
+  // Save edited entry
+  const handleSaveEdit = async () => {
+    if (!editForm.clock_in) {
+      showAlert('error', 'Clock in time is required');
+      return;
+    }
+
+    if (editForm.clock_out && new Date(editForm.clock_out) <= new Date(editForm.clock_in)) {
+      showAlert('error', 'Clock out must be after clock in');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('time_entries')
+        .update({
+          clock_in: new Date(editForm.clock_in).toISOString(),
+          clock_out: editForm.clock_out ? new Date(editForm.clock_out).toISOString() : null,
+          break_type: editForm.break_type,
+          notes: editForm.notes || null,
+          edited_by: currentUser.id,
+          edited_at: new Date().toISOString()
+        })
+        .eq('id', editingEntry.id);
+
+      if (error) throw error;
+
+      showAlert('success', 'Entry updated successfully');
+      setShowEditModal(false);
+      setEditingEntry(null);
+      await loadFilteredEntries();
+    } catch (error) {
+      showAlert('error', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete entry handler
+  const handleDeleteEntry = async (entryId) => {
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('time_entries')
+        .delete()
+        .eq('id', entryId);
+
+      if (error) throw error;
+
+      showAlert('success', 'Entry deleted successfully');
+      setShowDeleteConfirm(null);
+      await loadFilteredEntries();
+    } catch (error) {
+      showAlert('error', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Add manual entry
+  const handleAddEntry = async () => {
+    if (!addForm.employee_id || !addForm.date || !addForm.clock_in_time) {
+      showAlert('error', 'Please fill in all required fields');
+      return;
+    }
+
+    const clockIn = new Date(`${addForm.date}T${addForm.clock_in_time}`);
+    const clockOut = addForm.clock_out_time ? new Date(`${addForm.date}T${addForm.clock_out_time}`) : null;
+
+    if (clockOut && clockOut <= clockIn) {
+      showAlert('error', 'Clock out must be after clock in');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from('time_entries').insert({
+        employee_id: addForm.employee_id,
+        clock_in: clockIn.toISOString(),
+        clock_out: clockOut ? clockOut.toISOString() : null,
+        break_type: addForm.break_type,
+        notes: addForm.notes || null,
+        edited_by: currentUser.id,
+        edited_at: new Date().toISOString()
+      });
+
+      if (error) throw error;
+
+      showAlert('success', 'Entry added successfully');
+      setShowAddModal(false);
+      setAddForm({
+        employee_id: '',
+        date: new Date().toISOString().split('T')[0],
+        clock_in_time: '07:00',
+        clock_out_time: '16:00',
+        break_type: null,
+        notes: ''
+      });
+      await loadFilteredEntries();
+    } catch (error) {
+      showAlert('error', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Get current status
   const getCurrentStatus = (employeeId) => {
     const openEntry = timeEntries.find(e => e.employee_id === employeeId && !e.clock_out);
@@ -303,6 +479,28 @@ export default function App() {
       hour: '2-digit', 
       minute: '2-digit' 
     });
+  };
+
+  // Format date and time for display
+  const formatDateTime = (dateString) => {
+    if (!dateString) return 'OPEN';
+    const date = new Date(dateString);
+    return date.toLocaleString('en-US', { 
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+  };
+
+  // Check if entry is problematic
+  const isProblematicEntry = (entry) => {
+    if (!entry.clock_out) return 'open'; // Open punch
+    
+    const duration = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
+    if (duration > 12) return 'long'; // Over 12 hours
+    
+    return null;
   };
 
   // Calculate daily and weekly progress
@@ -543,6 +741,13 @@ export default function App() {
     return new Date(d.setDate(diff)).toISOString().split('T')[0];
   };
 
+  // Apply filters
+  useEffect(() => {
+    if (view === 'admin' && adminView === 'manage') {
+      loadFilteredEntries();
+    }
+  }, [filterEmployee, filterStartDate, filterEndDate, filterStatus, filterType, adminView]);
+
   // LOGIN VIEW
   if (view === 'login') {
     return (
@@ -560,7 +765,8 @@ export default function App() {
 
             {alert && (
               <div className={`mb-4 p-3 rounded-lg ${
-                alert.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
               }`}>
                 {alert.message}
               </div>
@@ -676,7 +882,8 @@ export default function App() {
 
             {alert && (
               <div className={`mb-4 p-3 rounded-lg ${
-                alert.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
               }`}>
                 {alert.message}
               </div>
@@ -839,49 +1046,83 @@ export default function App() {
 
   // ADMIN VIEW
   if (view === 'admin') {
+    // Admin navigation component
+    const AdminNav = () => (
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <div className="flex justify-between items-center mb-4">
+          <h1 className="text-3xl font-bold text-gray-800">
+            {adminView === 'dashboard' && 'Admin Dashboard'}
+            {adminView === 'reports' && 'Reports'}
+            {adminView === 'export' && 'Export Time Data'}
+            {adminView === 'manage' && 'Manage Time Entries'}
+          </h1>
+          <button
+            onClick={handleLogout}
+            className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
+          >
+            <LogOut className="w-4 h-4 inline mr-2" />
+            Logout
+          </button>
+        </div>
+        <div className="flex gap-4">
+          <button
+            onClick={() => setAdminView('dashboard')}
+            className={`px-4 py-2 rounded-lg transition ${
+              adminView === 'dashboard' 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <Users className="w-4 h-4 inline mr-2" />
+            Dashboard
+          </button>
+          <button
+            onClick={() => setAdminView('manage')}
+            className={`px-4 py-2 rounded-lg transition ${
+              adminView === 'manage' 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <Edit2 className="w-4 h-4 inline mr-2" />
+            Manage Entries
+          </button>
+          <button
+            onClick={() => setAdminView('reports')}
+            className={`px-4 py-2 rounded-lg transition ${
+              adminView === 'reports' 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <FileText className="w-4 h-4 inline mr-2" />
+            Reports
+          </button>
+          <button
+            onClick={() => setAdminView('export')}
+            className={`px-4 py-2 rounded-lg transition ${
+              adminView === 'export' 
+                ? 'bg-indigo-600 text-white' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <Download className="w-4 h-4 inline mr-2" />
+            Export
+          </button>
+        </div>
+      </div>
+    );
+
     if (adminView === 'dashboard') {
       return (
         <div className="min-h-screen bg-gray-50 p-4">
           <div className="max-w-7xl mx-auto">
-            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <div className="flex justify-between items-center mb-4">
-                <h1 className="text-3xl font-bold text-gray-800">Admin Dashboard</h1>
-                <button
-                  onClick={handleLogout}
-                  className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
-                >
-                  <LogOut className="w-4 h-4 inline mr-2" />
-                  Logout
-                </button>
-              </div>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setAdminView('dashboard')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Users className="w-4 h-4 inline mr-2" />
-                  Dashboard
-                </button>
-                <button
-                  onClick={() => setAdminView('reports')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <FileText className="w-4 h-4 inline mr-2" />
-                  Reports
-                </button>
-                <button
-                  onClick={() => setAdminView('export')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Download className="w-4 h-4 inline mr-2" />
-                  Export
-                </button>
-              </div>
-            </div>
+            <AdminNav />
 
             {alert && (
               <div className={`mb-4 p-4 rounded-lg ${
-                alert.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
               }`}>
                 {alert.message}
               </div>
@@ -913,47 +1154,471 @@ export default function App() {
       );
     }
 
+    if (adminView === 'manage') {
+      const filteredEntries = timeEntries;
+
+      return (
+        <div className="min-h-screen bg-gray-50 p-4">
+          <div className="max-w-7xl mx-auto">
+            <AdminNav />
+
+            {alert && (
+              <div className={`mb-4 p-4 rounded-lg ${
+                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+              }`}>
+                {alert.message}
+              </div>
+            )}
+
+            {/* Filters */}
+            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold text-gray-800">Filters</h2>
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Manual Entry
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Employee</label>
+                  <select
+                    value={filterEmployee}
+                    onChange={(e) => setFilterEmployee(e.target.value)}
+                    className="w-full border rounded px-3 py-2"
+                  >
+                    <option value="all">All Employees</option>
+                    {employees.map(emp => (
+                      <option key={emp.id} value={emp.id}>{emp.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                  <input
+                    type="date"
+                    value={filterStartDate}
+                    onChange={(e) => setFilterStartDate(e.target.value)}
+                    className="w-full border rounded px-3 py-2"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                  <input
+                    type="date"
+                    value={filterEndDate}
+                    onChange={(e) => setFilterEndDate(e.target.value)}
+                    className="w-full border rounded px-3 py-2"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
+                  <select
+                    value={filterStatus}
+                    onChange={(e) => setFilterStatus(e.target.value)}
+                    className="w-full border rounded px-3 py-2"
+                  >
+                    <option value="all">All</option>
+                    <option value="open">Open</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                  <select
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value)}
+                    className="w-full border rounded px-3 py-2"
+                  >
+                    <option value="all">All Types</option>
+                    <option value="work">Work</option>
+                    <option value="meal">Meal Break</option>
+                    <option value="rest">Rest Break</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Time Entries Table */}
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h2 className="text-lg font-bold text-gray-800 mb-4">
+                Time Entries ({filteredEntries.length})
+              </h2>
+              
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Employee</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Date</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Clock In</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Clock Out</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Type</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Duration</th>
+                      <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {filteredEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan="7" className="px-4 py-8 text-center text-gray-500">
+                          No entries found
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredEntries.map(entry => {
+                        const employee = employees.find(emp => emp.id === entry.employee_id);
+                        const problem = isProblematicEntry(entry);
+                        const bgColor = problem === 'open' ? 'bg-red-50' : problem === 'long' ? 'bg-yellow-50' : '';
+                        
+                        return (
+                          <tr key={entry.id} className={`hover:bg-gray-50 ${bgColor}`}>
+                            <td className="px-4 py-3 text-sm text-gray-900">
+                              {employee?.name || 'Unknown'}
+                              {entry.edited_at && (
+                                <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
+                                  EDITED
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {new Date(entry.clock_in).toLocaleDateString('en-US')}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {formatDateTime(entry.clock_in)}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {entry.clock_out ? (
+                                formatDateTime(entry.clock_out)
+                              ) : (
+                                <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-xs font-semibold flex items-center gap-1 w-fit">
+                                  <AlertCircle className="w-3 h-3" />
+                                  OPEN
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {entry.break_type ? 
+                                `${entry.break_type.charAt(0).toUpperCase() + entry.break_type.slice(1)} Break` : 
+                                'Work'}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {formatDuration(entry.clock_in, entry.clock_out)}
+                            </td>
+                            <td className="px-4 py-3 text-sm">
+                              <div className="flex justify-center gap-2">
+                                <button
+                                  onClick={() => handleEditEntry(entry)}
+                                  className="text-blue-600 hover:text-blue-800 p-1"
+                                  title="Edit"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => setShowDeleteConfirm(entry.id)}
+                                  className="text-red-600 hover:text-red-800 p-1"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5" />
+                  <div className="text-sm text-gray-700">
+                    <p className="font-semibold mb-1">Legend:</p>
+                    <div className="space-y-1">
+                      <p><span className="inline-block w-4 h-4 bg-red-50 border border-red-200 rounded mr-2"></span>Red highlight = Open punch (no clock out)</p>
+                      <p><span className="inline-block w-4 h-4 bg-yellow-50 border border-yellow-200 rounded mr-2"></span>Yellow highlight = Duration over 12 hours</p>
+                      <p><span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs mr-2">EDITED</span>Entry has been modified by admin</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Edit Modal */}
+            {showEditModal && editingEntry && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold text-gray-800">Edit Time Entry</h3>
+                    <button
+                      onClick={() => {
+                        setShowEditModal(false);
+                        setEditingEntry(null);
+                      }}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Employee
+                      </label>
+                      <p className="text-gray-900 font-semibold">
+                        {employees.find(emp => emp.id === editingEntry.employee_id)?.name || 'Unknown'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Clock In *
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={editForm.clock_in}
+                        onChange={(e) => setEditForm({...editForm, clock_in: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Clock Out
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={editForm.clock_out}
+                        onChange={(e) => setEditForm({...editForm, clock_out: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Type
+                      </label>
+                      <select
+                        value={editForm.break_type || 'work'}
+                        onChange={(e) => setEditForm({...editForm, break_type: e.target.value === 'work' ? null : e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      >
+                        <option value="work">Work</option>
+                        <option value="meal">Meal Break</option>
+                        <option value="rest">Rest Break</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Admin Notes
+                      </label>
+                      <textarea
+                        value={editForm.notes}
+                        onChange={(e) => setEditForm({...editForm, notes: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                        rows="3"
+                        placeholder="Reason for edit..."
+                      />
+                    </div>
+
+                    <div className="flex gap-3 pt-4">
+                      <button
+                        onClick={handleSaveEdit}
+                        disabled={loading}
+                        className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 flex items-center justify-center gap-2"
+                      >
+                        <Save className="w-4 h-4" />
+                        {loading ? 'Saving...' : 'Save Changes'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowEditModal(false);
+                          setEditingEntry(null);
+                        }}
+                        className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Add Manual Entry Modal */}
+            {showAddModal && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold text-gray-800">Add Manual Entry</h3>
+                    <button
+                      onClick={() => setShowAddModal(false)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Employee *
+                      </label>
+                      <select
+                        value={addForm.employee_id}
+                        onChange={(e) => setAddForm({...addForm, employee_id: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      >
+                        <option value="">Select Employee</option>
+                        {employees.map(emp => (
+                          <option key={emp.id} value={emp.id}>{emp.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Date *
+                      </label>
+                      <input
+                        type="date"
+                        value={addForm.date}
+                        onChange={(e) => setAddForm({...addForm, date: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Clock In Time *
+                      </label>
+                      <input
+                        type="time"
+                        value={addForm.clock_in_time}
+                        onChange={(e) => setAddForm({...addForm, clock_in_time: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Clock Out Time
+                      </label>
+                      <input
+                        type="time"
+                        value={addForm.clock_out_time}
+                        onChange={(e) => setAddForm({...addForm, clock_out_time: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Type
+                      </label>
+                      <select
+                        value={addForm.break_type || 'work'}
+                        onChange={(e) => setAddForm({...addForm, break_type: e.target.value === 'work' ? null : e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                      >
+                        <option value="work">Work</option>
+                        <option value="meal">Meal Break</option>
+                        <option value="rest">Rest Break</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Admin Notes
+                      </label>
+                      <textarea
+                        value={addForm.notes}
+                        onChange={(e) => setAddForm({...addForm, notes: e.target.value})}
+                        className="w-full border rounded px-3 py-2"
+                        rows="3"
+                        placeholder="Reason for manual entry..."
+                      />
+                    </div>
+
+                    <div className="flex gap-3 pt-4">
+                      <button
+                        onClick={handleAddEntry}
+                        disabled={loading}
+                        className="flex-1 bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 flex items-center justify-center gap-2"
+                      >
+                        <Plus className="w-4 h-4" />
+                        {loading ? 'Adding...' : 'Add Entry'}
+                      </button>
+                      <button
+                        onClick={() => setShowAddModal(false)}
+                        className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteConfirm && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="bg-red-100 p-3 rounded-full">
+                      <AlertCircle className="w-6 h-6 text-red-600" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-800">Confirm Delete</h3>
+                  </div>
+
+                  <p className="text-gray-600 mb-6">
+                    Are you sure you want to delete this time entry? This action cannot be undone.
+                  </p>
+
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => handleDeleteEntry(showDeleteConfirm)}
+                      disabled={loading}
+                      className="flex-1 bg-red-600 text-white py-2 rounded-lg hover:bg-red-700 transition disabled:bg-gray-400"
+                    >
+                      {loading ? 'Deleting...' : 'Delete'}
+                    </button>
+                    <button
+                      onClick={() => setShowDeleteConfirm(null)}
+                      className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     if (adminView === 'reports') {
       const currentWeekStart = getWeekStart(selectedDate);
 
       return (
         <div className="min-h-screen bg-gray-50 p-4">
           <div className="max-w-7xl mx-auto">
-            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <div className="flex justify-between items-center mb-4">
-                <h1 className="text-3xl font-bold text-gray-800">Reports</h1>
-                <button
-                  onClick={handleLogout}
-                  className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
-                >
-                  <LogOut className="w-4 h-4 inline mr-2" />
-                  Logout
-                </button>
-              </div>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setAdminView('dashboard')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Users className="w-4 h-4 inline mr-2" />
-                  Dashboard
-                </button>
-                <button
-                  onClick={() => setAdminView('reports')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <FileText className="w-4 h-4 inline mr-2" />
-                  Reports
-                </button>
-                <button
-                  onClick={() => setAdminView('export')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Download className="w-4 h-4 inline mr-2" />
-                  Export
-                </button>
-              </div>
-            </div>
+            <AdminNav />
 
             <div className="bg-white rounded-lg shadow-md p-6">
               <div className="flex justify-between items-center mb-6">
@@ -1032,45 +1697,12 @@ export default function App() {
       return (
         <div className="min-h-screen bg-gray-50 p-4">
           <div className="max-w-7xl mx-auto">
-            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-              <div className="flex justify-between items-center mb-4">
-                <h1 className="text-3xl font-bold text-gray-800">Export Time Data</h1>
-                <button
-                  onClick={handleLogout}
-                  className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
-                >
-                  <LogOut className="w-4 h-4 inline mr-2" />
-                  Logout
-                </button>
-              </div>
-              <div className="flex gap-4">
-                <button
-                  onClick={() => setAdminView('dashboard')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Users className="w-4 h-4 inline mr-2" />
-                  Dashboard
-                </button>
-                <button
-                  onClick={() => setAdminView('reports')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <FileText className="w-4 h-4 inline mr-2" />
-                  Reports
-                </button>
-                <button
-                  onClick={() => setAdminView('export')}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-                >
-                  <Download className="w-4 h-4 inline mr-2" />
-                  Export
-                </button>
-              </div>
-            </div>
+            <AdminNav />
 
             {alert && (
               <div className={`mb-4 p-4 rounded-lg ${
-                alert.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
               }`}>
                 {alert.message}
               </div>
