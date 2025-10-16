@@ -31,6 +31,41 @@ export default function App() {
     setTimeout(() => setAlert(null), 4000);
   };
 
+  const showPunchConfirmation = (action, breakType = null) => {
+    let message = '';
+    let icon = '';
+    
+    if (action === 'in') {
+      if (breakType === 'meal') {
+        message = 'Meal Break Started';
+        icon = '🍽️';
+      } else if (breakType === 'rest') {
+        message = 'Rest Break Started';
+        icon = '☕';
+      } else {
+        message = 'Clocked In';
+        icon = '✅';
+      }
+    } else {
+      const status = getCurrentStatus(currentUser?.id);
+      if (status.includes('Break')) {
+        message = 'Break Ended - Resumed Work';
+        icon = '💼';
+      } else {
+        message = 'Clocked Out';
+        icon = '👋';
+      }
+    }
+
+    setPunchConfirmation({ message, icon, time: new Date().toLocaleTimeString('en-US', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      second: '2-digit'
+    })});
+
+    setTimeout(() => setPunchConfirmation(null), 2000);
+  };
+
   // Login handler
   const handleLogin = async () => {
     if (!employeeNumber) {
@@ -152,7 +187,7 @@ export default function App() {
         });
 
         if (error) throw error;
-        showAlert('success', breakType ? `${breakType} break started` : 'Clocked in');
+        showPunchConfirmation('in', breakType);
       } else {
         // Clock out
         const openEntry = timeEntries.find(e => 
@@ -179,10 +214,9 @@ export default function App() {
             clock_in: new Date().toISOString(),
             break_type: null
           });
-          showAlert('success', 'Break ended - resumed work');
-        } else {
-          showAlert('success', 'Clocked out');
         }
+        
+        showPunchConfirmation('out');
       }
 
       await loadEmployeeData(currentUser.id);
@@ -212,6 +246,121 @@ export default function App() {
   };
 
   // Format duration
+  // Calculate daily and weekly progress
+  const calculateProgress = (employeeId) => {
+    const today = new Date().toISOString().split('T')[0];
+    const todayEntries = timeEntries.filter(e => 
+      e.employee_id === employeeId && 
+      e.clock_in.startsWith(today)
+    );
+
+    // Calculate today's hours (work time only, excluding breaks)
+    let todayHours = 0;
+    let currentlyWorking = false;
+    let currentWorkStart = null;
+
+    todayEntries.forEach(entry => {
+      if (!entry.break_type) { // Only count work time
+        if (entry.clock_out) {
+          const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
+          todayHours += hours;
+        } else {
+          // Currently clocked in
+          currentlyWorking = true;
+          currentWorkStart = entry.clock_in;
+          const hours = (new Date() - new Date(entry.clock_in)) / (1000 * 60 * 60);
+          todayHours += hours;
+        }
+      }
+    });
+
+    // Calculate weekly hours (work time only)
+    const weekStart = getWeekStart(today);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+
+    const weekEntries = timeEntries.filter(e => {
+      const entryDate = new Date(e.clock_in);
+      return e.employee_id === employeeId && 
+             entryDate >= new Date(weekStart) && 
+             entryDate < weekEnd;
+    });
+
+    let weekHours = 0;
+    weekEntries.forEach(entry => {
+      if (!entry.break_type && entry.clock_out) {
+        const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
+        weekHours += hours;
+      }
+    });
+
+    // Add current work session to weekly total if working
+    if (currentlyWorking && currentWorkStart) {
+      const currentHours = (new Date() - new Date(currentWorkStart)) / (1000 * 60 * 60);
+      weekHours += currentHours;
+    }
+
+    // Calculate expected hours based on schedule (7am-4pm with 1hr lunch = 8hrs/day)
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sunday, 1=Monday, etc.
+    const currentTime = now.getHours() + now.getMinutes() / 60;
+
+    // Calculate how many hours should be worked today based on time
+    let expectedTodayHours = 0;
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) { // Monday-Friday
+      if (currentTime < 7) {
+        expectedTodayHours = 0; // Before work starts
+      } else if (currentTime <= 12) {
+        // 7am-12pm: 5 hours max
+        expectedTodayHours = Math.min(currentTime - 7, 5);
+      } else if (currentTime <= 13) {
+        // 12pm-1pm: lunch hour, stay at 5 hours
+        expectedTodayHours = 5;
+      } else if (currentTime < 16) {
+        // 1pm-4pm: add hours after lunch
+        expectedTodayHours = 5 + (currentTime - 13);
+      } else {
+        // After 4pm: full 8 hours
+        expectedTodayHours = 8;
+      }
+    }
+
+    // Calculate expected weekly hours (days worked this week * 8)
+    let completedWorkDays = 0;
+    for (let d = 0; d < 7; d++) {
+      const checkDate = new Date(weekStart);
+      checkDate.setDate(checkDate.getDate() + d);
+      const checkDay = checkDate.getDay();
+      
+      if (checkDay >= 1 && checkDay <= 5) { // Monday-Friday
+        if (checkDate < now) {
+          completedWorkDays++;
+        } else if (checkDate.toDateString() === now.toDateString()) {
+          // Today counts as partial day based on time
+          completedWorkDays += expectedTodayHours / 8;
+        }
+      }
+    }
+
+    const expectedWeekHours = completedWorkDays * 8;
+
+    return {
+      todayHours,
+      expectedTodayHours,
+      todayDifference: todayHours - expectedTodayHours,
+      weekHours,
+      expectedWeekHours,
+      weekDifference: weekHours - expectedWeekHours,
+      currentlyWorking
+    };
+  };
+
+  const formatHoursMinutes = (hours) => {
+    const h = Math.floor(Math.abs(hours));
+    const m = Math.round((Math.abs(hours) - h) * 60);
+    return `${h}h ${m}m`;
+  };
+
   const formatDuration = (start, end) => {
     if (!end) return 'In Progress';
     const hours = (new Date(end) - new Date(start)) / (1000 * 60 * 60);
@@ -431,9 +580,22 @@ export default function App() {
       e.clock_in.startsWith(new Date().toISOString().split('T')[0])
     );
 
+    const progress = calculateProgress(currentUser.id);
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
         <div className="max-w-2xl mx-auto">
+          {/* Punch Confirmation Popup */}
+          {punchConfirmation && (
+            <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 animate-bounce">
+              <div className="bg-white rounded-2xl shadow-2xl p-8 border-4 border-green-500 text-center min-w-[300px]">
+                <div className="text-6xl mb-4">{punchConfirmation.icon}</div>
+                <div className="text-2xl font-bold text-gray-800 mb-2">{punchConfirmation.message}</div>
+                <div className="text-lg text-gray-600">{punchConfirmation.time}</div>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white rounded-xl shadow-2xl p-6">
             <div className="flex justify-between items-center mb-6">
               <div>
@@ -443,6 +605,7 @@ export default function App() {
                 }`}>
                   {status}
                 </p>
+                <p className="text-xs text-gray-400 mt-1">Auto-logout in 60s of inactivity</p>
               </div>
               <button
                 onClick={handleLogout}
@@ -460,6 +623,57 @@ export default function App() {
               </div>
             )}
 
+            {/* Progress Summary */}
+            <div className="mb-6 grid grid-cols-2 gap-4">
+              {/* Today's Progress */}
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border-2 border-blue-200">
+                <div className="text-xs font-semibold text-blue-800 mb-2">TODAY'S PROGRESS</div>
+                <div className="flex items-baseline mb-2">
+                  <span className="text-2xl font-bold text-blue-900">
+                    {formatHoursMinutes(progress.todayHours)}
+                  </span>
+                  <span className="text-sm text-blue-700 ml-2">of 8h 0m</span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-2 mb-2">
+                  <div 
+                    className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min((progress.todayHours / 8) * 100, 100)}%` }}
+                  ></div>
+                </div>
+                {progress.todayDifference !== 0 && (
+                  <div className={`text-xs font-semibold ${
+                    progress.todayDifference > 0 ? 'text-green-700' : 'text-orange-700'
+                  }`}>
+                    {progress.todayDifference > 0 ? '▲' : '▼'} {formatHoursMinutes(progress.todayDifference)} {progress.todayDifference > 0 ? 'ahead' : 'behind'} schedule
+                  </div>
+                )}
+              </div>
+
+              {/* Week's Progress */}
+              <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border-2 border-purple-200">
+                <div className="text-xs font-semibold text-purple-800 mb-2">THIS WEEK</div>
+                <div className="flex items-baseline mb-2">
+                  <span className="text-2xl font-bold text-purple-900">
+                    {formatHoursMinutes(progress.weekHours)}
+                  </span>
+                  <span className="text-sm text-purple-700 ml-2">of 40h 0m</span>
+                </div>
+                <div className="w-full bg-purple-200 rounded-full h-2 mb-2">
+                  <div 
+                    className="bg-purple-600 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min((progress.weekHours / 40) * 100, 100)}%` }}
+                  ></div>
+                </div>
+                {progress.weekDifference !== 0 && (
+                  <div className={`text-xs font-semibold ${
+                    progress.weekDifference > 0 ? 'text-green-700' : 'text-orange-700'
+                  }`}>
+                    {progress.weekDifference > 0 ? '▲' : '▼'} {formatHoursMinutes(progress.weekDifference)} {progress.weekDifference > 0 ? 'ahead' : 'behind'}
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4 mb-6">
               {!isClockedIn ? (
                 <button
@@ -468,6 +682,7 @@ export default function App() {
                   className="col-span-2 bg-green-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-green-700 transition disabled:bg-gray-400"
                 >
                   {loading ? 'Processing...' : 'Clock In'}
+                  <span className="ml-2 text-sm opacity-75">[Press 1]</span>
                 </button>
               ) : isOnBreak ? (
                 <button
@@ -476,6 +691,7 @@ export default function App() {
                   className="col-span-2 bg-green-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-green-700 transition disabled:bg-gray-400"
                 >
                   {loading ? 'Processing...' : 'End Break & Resume Work'}
+                  <span className="ml-2 text-sm opacity-75">[Press 4]</span>
                 </button>
               ) : (
                 <>
@@ -484,14 +700,16 @@ export default function App() {
                     disabled={loading}
                     className="bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:bg-gray-400"
                   >
-                    Take Meal Break
+                    <div>Take Meal Break</div>
+                    <div className="text-xs opacity-75">[Press 2]</div>
                   </button>
                   <button
                     onClick={() => handleClockAction('in', 'rest')}
                     disabled={loading}
                     className="bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600 transition disabled:bg-gray-400"
                   >
-                    Take Rest Break
+                    <div>Take Rest Break</div>
+                    <div className="text-xs opacity-75">[Press 3]</div>
                   </button>
                   <button
                     onClick={() => handleClockAction('out')}
@@ -499,12 +717,14 @@ export default function App() {
                     className="col-span-2 bg-red-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-red-700 transition disabled:bg-gray-400"
                   >
                     {loading ? 'Processing...' : 'Clock Out'}
+                    <span className="ml-2 text-sm opacity-75">[Press 1]</span>
                   </button>
                 </>
               )}
             </div>
 
-            <div className="border-t pt-4">
+            <div className="border-t pt-4 mb-4">
+              <h3 className="font-semibold text-gray-700 mb-3">Today's Time</h3>
               <h3 className="font-semibold text-gray-700 mb-3">Today's Time</h3>
               {todayEntries.length === 0 ? (
                 <p className="text-gray-500 text-sm">No punches today</p>
@@ -538,6 +758,20 @@ export default function App() {
                 <li>• Meal breaks: 1 hour for shifts over 6 hours (unpaid)</li>
                 <li>• Major fraction = 2+ hours (e.g., 6 hours = 2 rest breaks)</li>
               </ul>
+            </div>
+
+            <div className="mt-3 p-3 bg-gray-50 rounded-lg border-l-4 border-indigo-500">
+              <p className="text-xs font-semibold text-gray-700 mb-1">⌨️ Keyboard Shortcuts:</p>
+              <ul className="text-xs text-gray-600 space-y-0.5">
+                <li>• Press <strong>1</strong> to Clock In/Out</li>
+                <li>• Press <strong>2</strong> for Meal Break</li>
+                <li>• Press <strong>3</strong> for Rest Break</li>
+                <li>• Press <strong>4</strong> to End Break</li>
+                <li>• Press <strong>0</strong> or <strong>ESC</strong> to Logout</li>
+              </ul>
+              <div className="mt-2 pt-2 border-t border-gray-300 text-xs text-gray-500">
+                Schedule: Mon-Fri 7am-4pm (8 hours) with 1-hour lunch
+              </div>
             </div>
           </div>
         </div>
@@ -724,8 +958,8 @@ export default function App() {
                 </h3>
                 <ul className="text-sm text-gray-700 space-y-1">
                   <li>✓ Overtime calculated at 1.5x after 40 hours/week</li>
-                  <li>✓ Meal breaks tracked (required 30min for 6+ hour shifts)</li>
-                  <li>✓ Rest breaks tracked (required 10min per 4 hours worked)</li>
+                  <li>✓ Meal breaks tracked (1 hour for 6+ hour shifts)</li>
+                  <li>✓ Rest breaks tracked (10min per 4 hours or major fraction - 2+ hours)</li>
                   <li>✓ All time entries include audit trail</li>
                   <li>✓ Records maintained with timestamp accuracy</li>
                 </ul>
