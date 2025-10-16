@@ -31,7 +31,7 @@ export default function App() {
     setTimeout(() => setAlert(null), 4000);
   };
 
-  const showPunchConfirmation = (action, breakType = null) => {
+  const showPunchConfirmation = (action, breakType = null, wasOnBreak = false) => {
     let message = '';
     let icon = '';
     
@@ -47,8 +47,7 @@ export default function App() {
         icon = '✅';
       }
     } else {
-      const status = getCurrentStatus(currentUser?.id);
-      if (status.includes('Break')) {
+      if (wasOnBreak) {
         message = 'Break Ended - Resumed Work';
         icon = '💼';
       } else {
@@ -161,6 +160,13 @@ export default function App() {
   // Clock in/out handler
   const handleClockAction = async (action, breakType = null) => {
     setLoading(true);
+    
+    // Determine if currently on break before making changes
+    const openEntry = timeEntries.find(e => 
+      e.employee_id === currentUser.id && !e.clock_out
+    );
+    const wasOnBreak = openEntry?.break_type !== null && openEntry?.break_type !== undefined;
+    
     try {
       if (action === 'in') {
         // Check if there's an open work entry when starting a break
@@ -187,13 +193,9 @@ export default function App() {
         });
 
         if (error) throw error;
-        showPunchConfirmation('in', breakType);
+        showPunchConfirmation('in', breakType, false);
       } else {
         // Clock out
-        const openEntry = timeEntries.find(e => 
-          e.employee_id === currentUser.id && !e.clock_out
-        );
-
         if (!openEntry) {
           showAlert('error', 'No open time entry');
           setLoading(false);
@@ -216,7 +218,7 @@ export default function App() {
           });
         }
         
-        showPunchConfirmation('out');
+        showPunchConfirmation('out', null, wasOnBreak);
       }
 
       await loadEmployeeData(currentUser.id);
