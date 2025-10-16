@@ -534,8 +534,9 @@ export default function App() {
             <div className="mt-4 p-3 bg-blue-50 rounded-lg">
               <p className="text-xs font-semibold text-gray-700 mb-1">Oregon Break Requirements:</p>
               <ul className="text-xs text-gray-600 space-y-0.5">
-                <li>• Rest breaks: 10 minutes per 4 hours worked (paid)</li>
-                <li>• Meal breaks: 30 minutes for shifts over 6 hours (unpaid)</li>
+                <li>• Rest breaks: 10 minutes for every 4 hours worked or major fraction thereof (paid)</li>
+                <li>• Meal breaks: 1 hour for shifts over 6 hours (unpaid)</li>
+                <li>• Major fraction = 2+ hours (e.g., 6 hours = 2 rest breaks)</li>
               </ul>
             </div>
           </div>
