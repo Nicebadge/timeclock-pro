@@ -1,11 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, FileText, LogOut, Shield, Database, Download, Edit2, Trash2, Plus, AlertCircle, X, Save } from 'lucide-react';
+import { Clock, Users, FileText, LogOut, Shield, Database, Download, Edit2, Trash2, Plus, AlertCircle, X, Save, AlertTriangle } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
 // Get Supabase credentials from environment variables
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+// BREAK POLICY CONFIGURATION
+const BREAK_POLICY = {
+  rest: {
+    entitled: 10, // minutes paid
+    label: 'Rest Break',
+    paid: true
+  },
+  meal: {
+    entitled: 30, // minutes (unpaid, but tracking for compliance)
+    label: 'Meal Break', 
+    paid: false
+  }
+};
 
 export default function App() {
   // State management
@@ -52,6 +66,37 @@ export default function App() {
     break_type: null,
     notes: ''
   });
+
+  // Helper function to calculate break duration in minutes
+  const getBreakDuration = (entry) => {
+    if (!entry.clock_out) return 0;
+    return (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60);
+  };
+
+  // Helper function to get paid break time
+  const getPaidBreakTime = (entry) => {
+    if (!entry.break_type) return 0;
+    
+    const actualMinutes = getBreakDuration(entry);
+    const policy = BREAK_POLICY[entry.break_type];
+    
+    if (!policy || !policy.paid) return 0; // Meal breaks are unpaid
+    
+    // Pay for entitled minutes or actual minutes, whichever is less
+    return Math.min(actualMinutes, policy.entitled) / 60; // Return in hours
+  };
+
+  // Helper function to get break overage
+  const getBreakOverage = (entry) => {
+    if (!entry.break_type || !entry.clock_out) return 0;
+    
+    const actualMinutes = getBreakDuration(entry);
+    const policy = BREAK_POLICY[entry.break_type];
+    
+    if (!policy) return 0;
+    
+    return Math.max(0, actualMinutes - policy.entitled);
+  };
 
   // Auto-logout after 60 seconds of inactivity
   useEffect(() => {
@@ -348,7 +393,7 @@ export default function App() {
   const handleEditEntry = (entry) => {
     setEditingEntry(entry);
     setEditForm({
-      clock_in: entry.clock_in.substring(0, 16), // Format for datetime-local input
+      clock_in: entry.clock_in.substring(0, 16),
       clock_out: entry.clock_out ? entry.clock_out.substring(0, 16) : '',
       break_type: entry.break_type,
       notes: entry.notes || ''
@@ -495,15 +540,19 @@ export default function App() {
 
   // Check if entry is problematic
   const isProblematicEntry = (entry) => {
-    if (!entry.clock_out) return 'open'; // Open punch
+    if (!entry.clock_out) return 'open';
     
     const duration = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
-    if (duration > 12) return 'long'; // Over 12 hours
+    if (duration > 12) return 'long';
+    
+    // Check for break overages
+    const overage = getBreakOverage(entry);
+    if (overage > 0) return 'break-overage';
     
     return null;
   };
 
-  // Calculate daily and weekly progress
+  // Calculate daily and weekly progress with new break logic
   const calculateProgress = (employeeId) => {
     const today = new Date().toISOString().split('T')[0];
     const todayEntries = timeEntries.filter(e => 
@@ -511,27 +560,30 @@ export default function App() {
       e.clock_in.startsWith(today)
     );
 
-    // Calculate today's hours (work time only, excluding breaks)
     let todayHours = 0;
     let currentlyWorking = false;
     let currentWorkStart = null;
 
     todayEntries.forEach(entry => {
-      if (!entry.break_type) { // Only count work time
+      if (!entry.break_type) {
+        // Work time - always counts
         if (entry.clock_out) {
           const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
           todayHours += hours;
         } else {
-          // Currently clocked in
           currentlyWorking = true;
           currentWorkStart = entry.clock_in;
           const hours = (new Date() - new Date(entry.clock_in)) / (1000 * 60 * 60);
           todayHours += hours;
         }
+      } else {
+        // Break time - only add PAID portion
+        const paidHours = getPaidBreakTime(entry);
+        todayHours += paidHours;
       }
     });
 
-    // Calculate weekly hours (work time only)
+    // Calculate weekly hours
     const weekStart = getWeekStart(today);
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekEnd.getDate() + 7);
@@ -546,8 +598,12 @@ export default function App() {
     let weekHours = 0;
     weekEntries.forEach(entry => {
       if (!entry.break_type && entry.clock_out) {
+        // Work time
         const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
         weekHours += hours;
+      } else if (entry.break_type && entry.clock_out) {
+        // Add paid break time only
+        weekHours += getPaidBreakTime(entry);
       }
     });
 
@@ -557,43 +613,36 @@ export default function App() {
       weekHours += currentHours;
     }
 
-    // Calculate expected hours based on schedule (7am-4pm with 1hr lunch = 8hrs/day)
+    // Calculate expected hours
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0=Sunday, 1=Monday, etc.
+    const dayOfWeek = now.getDay();
     const currentTime = now.getHours() + now.getMinutes() / 60;
 
-    // Calculate how many hours should be worked today based on time
     let expectedTodayHours = 0;
-    if (dayOfWeek >= 1 && dayOfWeek <= 5) { // Monday-Friday
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
       if (currentTime < 7) {
-        expectedTodayHours = 0; // Before work starts
+        expectedTodayHours = 0;
       } else if (currentTime <= 12) {
-        // 7am-12pm: 5 hours max
         expectedTodayHours = Math.min(currentTime - 7, 5);
       } else if (currentTime <= 13) {
-        // 12pm-1pm: lunch hour, stay at 5 hours
         expectedTodayHours = 5;
       } else if (currentTime < 16) {
-        // 1pm-4pm: add hours after lunch
         expectedTodayHours = 5 + (currentTime - 13);
       } else {
-        // After 4pm: full 8 hours
         expectedTodayHours = 8;
       }
     }
 
-    // Calculate expected weekly hours (days worked this week * 8)
     let completedWorkDays = 0;
     for (let d = 0; d < 7; d++) {
       const checkDate = new Date(weekStart);
       checkDate.setDate(checkDate.getDate() + d);
       const checkDay = checkDate.getDay();
       
-      if (checkDay >= 1 && checkDay <= 5) { // Monday-Friday
+      if (checkDay >= 1 && checkDay <= 5) {
         if (checkDate < now) {
           completedWorkDays++;
         } else if (checkDate.toDateString() === now.toDateString()) {
-          // Today counts as partial day based on time
           completedWorkDays += expectedTodayHours / 8;
         }
       }
@@ -632,7 +681,7 @@ export default function App() {
 
     const exportEntries = timeEntries.filter(e => {
       const entryDate = new Date(e.clock_in);
-      return e.clock_out && !e.break_type && entryDate >= start && entryDate <= end;
+      return e.clock_out && entryDate >= start && entryDate <= end;
     });
 
     const groupedData = {};
@@ -647,8 +696,14 @@ export default function App() {
         groupedData[key] = { employeeName: employee.name, date: date, hours: 0 };
       }
 
-      const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
-      groupedData[key].hours += hours;
+      if (!entry.break_type) {
+        // Work time
+        const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
+        groupedData[key].hours += hours;
+      } else {
+        // Add only PAID break time
+        groupedData[key].hours += getPaidBreakTime(entry);
+      }
     });
 
     let csv = '!TIMERHDR\tVER\tREL\tCOMPANYNAME\tIMPORTEDBEFORE\n';
@@ -682,7 +737,7 @@ export default function App() {
       return e.clock_out && entryDate >= start && entryDate <= end;
     });
 
-    let csv = 'Employee Number,Employee Name,Date,Clock In,Clock Out,Type,Duration (Hours)\n';
+    let csv = 'Employee Number,Employee Name,Date,Clock In,Clock Out,Type,Actual Duration (Hours),Paid Duration (Hours),Unpaid Overage (Min)\n';
 
     exportEntries.forEach(entry => {
       const employee = employees.find(emp => emp.id === entry.employee_id);
@@ -691,12 +746,23 @@ export default function App() {
       const date = new Date(entry.clock_in).toLocaleDateString('en-US');
       const clockIn = formatTime(entry.clock_in);
       const clockOut = formatTime(entry.clock_out);
-      const duration = ((new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60)).toFixed(2);
+      const actualDuration = ((new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60)).toFixed(2);
+      
+      let paidDuration;
+      let overage = 0;
+      
+      if (!entry.break_type) {
+        paidDuration = actualDuration;
+      } else {
+        paidDuration = getPaidBreakTime(entry).toFixed(2);
+        overage = getBreakOverage(entry).toFixed(0);
+      }
+      
       const type = entry.break_type ? 
         entry.break_type.charAt(0).toUpperCase() + entry.break_type.slice(1) + ' Break' : 
         'Work';
 
-      csv += `${employee.employee_number},"${employee.name}","${date}","${clockIn}","${clockOut}","${type}",${duration}\n`;
+      csv += `${employee.employee_number},"${employee.name}","${date}","${clockIn}","${clockOut}","${type}",${actualDuration},${paidDuration},${overage}\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -708,7 +774,7 @@ export default function App() {
     showAlert('success', 'CSV file downloaded!');
   };
 
-  // Calculate weekly hours
+  // Calculate weekly hours with new break logic
   const calculateWeeklyHours = (employeeId, weekStart) => {
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekEnd.getDate() + 7);
@@ -717,15 +783,20 @@ export default function App() {
       const entryDate = new Date(e.clock_in);
       return e.employee_id === employeeId && 
              e.clock_out && 
-             !e.break_type &&
              entryDate >= new Date(weekStart) && 
              entryDate < weekEnd;
     });
 
     let totalHours = 0;
     weekEntries.forEach(entry => {
-      const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
-      totalHours += hours;
+      if (!entry.break_type) {
+        // Work time
+        const hours = (new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60);
+        totalHours += hours;
+      } else {
+        // Add only PAID break time
+        totalHours += getPaidBreakTime(entry);
+      }
     });
 
     const regularHours = Math.min(totalHours, 40);
@@ -747,6 +818,73 @@ export default function App() {
       loadFilteredEntries();
     }
   }, [filterEmployee, filterStartDate, filterEndDate, filterStatus, filterType, adminView]);
+
+  // Admin navigation component
+  const AdminNav = () => (
+    <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-3xl font-bold text-gray-800">
+          {adminView === 'dashboard' && 'Admin Dashboard'}
+          {adminView === 'reports' && 'Reports'}
+          {adminView === 'export' && 'Export Time Data'}
+          {adminView === 'manage' && 'Manage Time Entries'}
+        </h1>
+        <button
+          onClick={handleLogout}
+          className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
+        >
+          <LogOut className="w-4 h-4 inline mr-2" />
+          Logout
+        </button>
+      </div>
+      <div className="flex gap-4">
+        <button
+          onClick={() => setAdminView('dashboard')}
+          className={`px-4 py-2 rounded-lg transition ${
+            adminView === 'dashboard' 
+              ? 'bg-indigo-600 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          <Users className="w-4 h-4 inline mr-2" />
+          Dashboard
+        </button>
+        <button
+          onClick={() => setAdminView('manage')}
+          className={`px-4 py-2 rounded-lg transition ${
+            adminView === 'manage' 
+              ? 'bg-indigo-600 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          <Edit2 className="w-4 h-4 inline mr-2" />
+          Manage Entries
+        </button>
+        <button
+          onClick={() => setAdminView('reports')}
+          className={`px-4 py-2 rounded-lg transition ${
+            adminView === 'reports' 
+              ? 'bg-indigo-600 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          <FileText className="w-4 h-4 inline mr-2" />
+          Reports
+        </button>
+        <button
+          onClick={() => setAdminView('export')}
+          className={`px-4 py-2 rounded-lg transition ${
+            adminView === 'export' 
+              ? 'bg-indigo-600 text-white' 
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          <Download className="w-4 h-4 inline mr-2" />
+          Export
+        </button>
+      </div>
+    </div>
+  );
 
   // LOGIN VIEW
   if (view === 'login') {
@@ -850,7 +988,6 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
         <div className="max-w-2xl mx-auto">
-          {/* Punch Confirmation Popup */}
           {punchConfirmation && (
             <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 animate-bounce">
               <div className="bg-white rounded-2xl shadow-2xl p-8 border-4 border-green-500 text-center min-w-[300px]">
@@ -889,9 +1026,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Progress Summary */}
             <div className="mb-6 grid grid-cols-2 gap-4">
-              {/* Today's Progress */}
               <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border-2 border-blue-200">
                 <div className="text-xs font-semibold text-blue-800 mb-2">TODAY'S PROGRESS</div>
                 <div className="flex items-baseline mb-2">
@@ -915,7 +1050,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Week's Progress */}
               <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border-2 border-purple-200">
                 <div className="text-xs font-semibold text-purple-800 mb-2">THIS WEEK</div>
                 <div className="flex items-baseline mb-2">
@@ -995,23 +1129,31 @@ export default function App() {
                 <p className="text-gray-500 text-sm">No punches today</p>
               ) : (
                 <div className="space-y-2">
-                  {todayEntries.map(entry => (
-                    <div key={entry.id} className="flex justify-between items-center text-sm bg-gray-50 p-3 rounded">
-                      <div>
-                        <span className="font-medium">
-                          {entry.break_type ? 
-                            `${entry.break_type.charAt(0).toUpperCase() + entry.break_type.slice(1)} Break` : 
-                            'Work'}
-                        </span>
-                        <span className="text-gray-500 ml-2">
-                          {formatTime(entry.clock_in)} - {formatTime(entry.clock_out)}
+                  {todayEntries.map(entry => {
+                    const overage = getBreakOverage(entry);
+                    return (
+                      <div key={entry.id} className="flex justify-between items-center text-sm bg-gray-50 p-3 rounded">
+                        <div>
+                          <span className="font-medium">
+                            {entry.break_type ? 
+                              `${entry.break_type.charAt(0).toUpperCase() + entry.break_type.slice(1)} Break` : 
+                              'Work'}
+                          </span>
+                          <span className="text-gray-500 ml-2">
+                            {formatTime(entry.clock_in)} - {formatTime(entry.clock_out)}
+                          </span>
+                          {overage > 0 && (
+                            <span className="ml-2 text-xs bg-orange-100 text-orange-800 px-2 py-0.5 rounded">
+                              +{overage.toFixed(0)} min over
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-gray-700 font-medium">
+                          {formatDuration(entry.clock_in, entry.clock_out)}
                         </span>
                       </div>
-                      <span className="text-gray-700 font-medium">
-                        {formatDuration(entry.clock_in, entry.clock_out)}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1019,9 +1161,9 @@ export default function App() {
             <div className="mt-4 p-3 bg-blue-50 rounded-lg">
               <p className="text-xs font-semibold text-gray-700 mb-1">Oregon Break Requirements:</p>
               <ul className="text-xs text-gray-600 space-y-0.5">
-                <li>• Rest breaks: 10 minutes for every 4 hours worked or major fraction thereof (paid)</li>
-                <li>• Meal breaks: 1 hour for shifts over 6 hours (unpaid)</li>
-                <li>• Major fraction = 2+ hours (e.g., 6 hours = 2 rest breaks)</li>
+                <li>• Rest breaks: <strong>10 minutes paid</strong> for every 4 hours worked</li>
+                <li>• Meal breaks: 30 minutes minimum (unpaid)</li>
+                <li>• <strong>Time over 10 minutes on rest breaks is unpaid</strong></li>
               </ul>
             </div>
 
@@ -1030,7 +1172,7 @@ export default function App() {
               <ul className="text-xs text-gray-600 space-y-0.5">
                 <li>• Press <strong>1</strong> to Clock In/Out</li>
                 <li>• Press <strong>2</strong> for Meal Break</li>
-                <li>• Press <strong>3</strong> for Rest Break</li>
+                <li>• Press <strong>3</strong> for Rest Break (10 min paid)</li>
                 <li>• Press <strong>4</strong> to End Break</li>
                 <li>• Press <strong>0</strong> or <strong>ESC</strong> to Logout</li>
               </ul>
@@ -1046,73 +1188,6 @@ export default function App() {
 
   // ADMIN VIEW
   if (view === 'admin') {
-    // Admin navigation component
-    const AdminNav = () => (
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-3xl font-bold text-gray-800">
-            {adminView === 'dashboard' && 'Admin Dashboard'}
-            {adminView === 'reports' && 'Reports'}
-            {adminView === 'export' && 'Export Time Data'}
-            {adminView === 'manage' && 'Manage Time Entries'}
-          </h1>
-          <button
-            onClick={handleLogout}
-            className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
-          >
-            <LogOut className="w-4 h-4 inline mr-2" />
-            Logout
-          </button>
-        </div>
-        <div className="flex gap-4">
-          <button
-            onClick={() => setAdminView('dashboard')}
-            className={`px-4 py-2 rounded-lg transition ${
-              adminView === 'dashboard' 
-                ? 'bg-indigo-600 text-white' 
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            <Users className="w-4 h-4 inline mr-2" />
-            Dashboard
-          </button>
-          <button
-            onClick={() => setAdminView('manage')}
-            className={`px-4 py-2 rounded-lg transition ${
-              adminView === 'manage' 
-                ? 'bg-indigo-600 text-white' 
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            <Edit2 className="w-4 h-4 inline mr-2" />
-            Manage Entries
-          </button>
-          <button
-            onClick={() => setAdminView('reports')}
-            className={`px-4 py-2 rounded-lg transition ${
-              adminView === 'reports' 
-                ? 'bg-indigo-600 text-white' 
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            <FileText className="w-4 h-4 inline mr-2" />
-            Reports
-          </button>
-          <button
-            onClick={() => setAdminView('export')}
-            className={`px-4 py-2 rounded-lg transition ${
-              adminView === 'export' 
-                ? 'bg-indigo-600 text-white' 
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            <Download className="w-4 h-4 inline mr-2" />
-            Export
-          </button>
-        </div>
-      </div>
-    );
-
     if (adminView === 'dashboard') {
       return (
         <div className="min-h-screen bg-gray-50 p-4">
@@ -1263,14 +1338,15 @@ export default function App() {
                       <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Clock In</th>
                       <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Clock Out</th>
                       <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Type</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Duration</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actual</th>
+                      <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Paid</th>
                       <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
                     {filteredEntries.length === 0 ? (
                       <tr>
-                        <td colSpan="7" className="px-4 py-8 text-center text-gray-500">
+                        <td colSpan="8" className="px-4 py-8 text-center text-gray-500">
                           No entries found
                         </td>
                       </tr>
@@ -1278,7 +1354,16 @@ export default function App() {
                       filteredEntries.map(entry => {
                         const employee = employees.find(emp => emp.id === entry.employee_id);
                         const problem = isProblematicEntry(entry);
-                        const bgColor = problem === 'open' ? 'bg-red-50' : problem === 'long' ? 'bg-yellow-50' : '';
+                        const bgColor = problem === 'open' ? 'bg-red-50' : 
+                                       problem === 'long' ? 'bg-yellow-50' : 
+                                       problem === 'break-overage' ? 'bg-orange-50' : '';
+                        const overage = getBreakOverage(entry);
+                        const actualDuration = entry.clock_out ? 
+                          ((new Date(entry.clock_out) - new Date(entry.clock_in)) / (1000 * 60 * 60)).toFixed(2) : 
+                          'Open';
+                        const paidDuration = entry.clock_out ?
+                          (entry.break_type ? getPaidBreakTime(entry).toFixed(2) : actualDuration) :
+                          'Open';
                         
                         return (
                           <tr key={entry.id} className={`hover:bg-gray-50 ${bgColor}`}>
@@ -1310,9 +1395,18 @@ export default function App() {
                               {entry.break_type ? 
                                 `${entry.break_type.charAt(0).toUpperCase() + entry.break_type.slice(1)} Break` : 
                                 'Work'}
+                              {overage > 0 && (
+                                <div className="text-xs text-orange-600 font-semibold flex items-center gap-1 mt-1">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  +{overage.toFixed(0)}min over
+                                </div>
+                              )}
                             </td>
                             <td className="px-4 py-3 text-sm text-gray-700">
-                              {formatDuration(entry.clock_in, entry.clock_out)}
+                              {actualDuration === 'Open' ? 'Open' : `${actualDuration}h`}
+                            </td>
+                            <td className="px-4 py-3 text-sm font-semibold text-gray-900">
+                              {paidDuration === 'Open' ? 'Open' : `${paidDuration}h`}
                             </td>
                             <td className="px-4 py-3 text-sm">
                               <div className="flex justify-center gap-2">
@@ -1342,13 +1436,18 @@ export default function App() {
 
               <div className="mt-4 p-4 bg-blue-50 rounded-lg">
                 <div className="flex items-start gap-2">
-                  <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5" />
+                  <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
                   <div className="text-sm text-gray-700">
-                    <p className="font-semibold mb-1">Legend:</p>
+                    <p className="font-semibold mb-2">Legend & Break Policy:</p>
                     <div className="space-y-1">
-                      <p><span className="inline-block w-4 h-4 bg-red-50 border border-red-200 rounded mr-2"></span>Red highlight = Open punch (no clock out)</p>
-                      <p><span className="inline-block w-4 h-4 bg-yellow-50 border border-yellow-200 rounded mr-2"></span>Yellow highlight = Duration over 12 hours</p>
-                      <p><span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs mr-2">EDITED</span>Entry has been modified by admin</p>
+                      <p><span className="inline-block w-4 h-4 bg-red-50 border border-red-200 rounded mr-2"></span>Red = Open punch (no clock out)</p>
+                      <p><span className="inline-block w-4 h-4 bg-yellow-50 border border-yellow-200 rounded mr-2"></span>Yellow = Duration over 12 hours</p>
+                      <p><span className="inline-block w-4 h-4 bg-orange-50 border border-orange-200 rounded mr-2"></span>Orange = Rest break exceeded 10 minutes</p>
+                      <p className="font-semibold mt-2">⚠️ Break Pay Policy:</p>
+                      <p className="ml-4">• Rest breaks: <strong>10 minutes paid max</strong> - any time over 10 min is unpaid</p>
+                      <p className="ml-4">• Meal breaks: <strong>Entirely unpaid</strong></p>
+                      <p className="ml-4">• "Actual" column = Time employee was away from work</p>
+                      <p className="ml-4">• "Paid" column = Time employee gets paid for</p>
                     </div>
                   </div>
                 </div>
@@ -1416,8 +1515,8 @@ export default function App() {
                         className="w-full border rounded px-3 py-2"
                       >
                         <option value="work">Work</option>
-                        <option value="meal">Meal Break</option>
-                        <option value="rest">Rest Break</option>
+                        <option value="meal">Meal Break (unpaid)</option>
+                        <option value="rest">Rest Break (10 min paid)</option>
                       </select>
                     </div>
 
@@ -1535,8 +1634,8 @@ export default function App() {
                         className="w-full border rounded px-3 py-2"
                       >
                         <option value="work">Work</option>
-                        <option value="meal">Meal Break</option>
-                        <option value="rest">Rest Break</option>
+                        <option value="meal">Meal Break (unpaid)</option>
+                        <option value="rest">Rest Break (10 min paid)</option>
                       </select>
                     </div>
 
@@ -1677,12 +1776,12 @@ export default function App() {
               <div className="mt-6 p-4 bg-green-50 rounded-lg">
                 <h3 className="font-semibold text-gray-800 mb-2 flex items-center">
                   <Shield className="w-5 h-5 mr-2 text-green-600" />
-                  Oregon Labor Law Compliance
+                  Oregon Labor Law Compliance & Pay Policy
                 </h3>
                 <ul className="text-sm text-gray-700 space-y-1">
                   <li>✓ Overtime calculated at 1.5x after 40 hours/week</li>
-                  <li>✓ Meal breaks tracked (1 hour for 6+ hour shifts)</li>
-                  <li>✓ Rest breaks tracked (10min per 4 hours or major fraction - 2+ hours)</li>
+                  <li>✓ Rest breaks: <strong>10 minutes paid</strong> - time over 10 min is unpaid</li>
+                  <li>✓ Meal breaks: Entirely unpaid (30 min minimum)</li>
                   <li>✓ All time entries include audit trail</li>
                   <li>✓ Records maintained with timestamp accuracy</li>
                 </ul>
@@ -1709,7 +1808,6 @@ export default function App() {
             )}
 
             <div className="grid md:grid-cols-2 gap-6">
-              {/* QuickBooks Export */}
               <div className="bg-white rounded-lg shadow-md p-6">
                 <div className="flex items-center mb-4">
                   <FileText className="w-8 h-8 text-green-600 mr-3" />
@@ -1755,10 +1853,10 @@ export default function App() {
                     <li>Select the downloaded .iif file</li>
                     <li>Review and confirm the import</li>
                   </ol>
+                  <p className="text-xs text-gray-700 mt-2 font-semibold">Note: Includes paid hours only (work + 10 min rest breaks)</p>
                 </div>
               </div>
 
-              {/* Standard CSV Export */}
               <div className="bg-white rounded-lg shadow-md p-6">
                 <div className="flex items-center mb-4">
                   <Database className="w-8 h-8 text-indigo-600 mr-3" />
@@ -1802,7 +1900,8 @@ export default function App() {
                     <li>✓ Employee number and name</li>
                     <li>✓ Date, clock in/out times</li>
                     <li>✓ Entry type (Work/Break)</li>
-                    <li>✓ Duration in decimal hours</li>
+                    <li>✓ <strong>Actual duration vs Paid duration</strong></li>
+                    <li>✓ <strong>Break overages in minutes</strong></li>
                   </ul>
                 </div>
               </div>
