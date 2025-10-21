@@ -86,17 +86,17 @@ export default function App() {
     return Math.min(actualMinutes, policy.entitled) / 60; // Return in hours
   };
 
-  // Helper function to get break overage
-  const getBreakOverage = (entry) => {
-    if (!entry.break_type || !entry.clock_out) return 0;
-    
-    const actualMinutes = getBreakDuration(entry);
-    const policy = BREAK_POLICY[entry.break_type];
-    
-    if (!policy) return 0;
-    
-    return Math.max(0, actualMinutes - policy.entitled);
-  };
+ // Helper function to get break overage - ONLY for PAID breaks
+const getBreakOverage = (entry) => {
+  if (!entry.break_type || !entry.clock_out) return 0;
+  
+  const actualMinutes = getBreakDuration(entry);
+  const policy = BREAK_POLICY[entry.break_type];
+  
+  if (!policy || !policy.paid) return 0; // Don't show overage for unpaid breaks
+  
+  return Math.max(0, actualMinutes - policy.entitled);
+};
 
   // Auto-logout after 60 seconds of inactivity
   useEffect(() => {
