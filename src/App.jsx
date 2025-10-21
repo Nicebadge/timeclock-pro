@@ -886,91 +886,48 @@ const getBreakOverage = (entry) => {
     </div>
   );
 
-  // LOGIN VIEW
-  if (view === 'login') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-        <div className="max-w-md mx-auto mt-20">
-          <div className="bg-white rounded-xl shadow-2xl p-8">
-            <div className="text-center mb-8">
-              <div className="flex justify-center items-center mb-4">
+// LOGIN VIEW
+if (view === 'login') {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      <div className="max-w-md mx-auto mt-20">
+        <div className="bg-white rounded-xl shadow-2xl p-8">
+          <div className="text-center mb-8">
+            {/* Nicebadge Logo */}
+            <div className="flex justify-center items-center mb-4">
+              <img 
+                src="/nicebadge-logo.png"
+                alt="Nicebadge Logo"
+                className="w-24 h-24 object-contain"
+                onError={(e) => {
+                  // Fallback if logo doesn't load
+                  e.target.style.display = 'none';
+                  e.target.nextSibling.style.display = 'flex';
+                }}
+              />
+              {/* Fallback icons if logo fails to load */}
+              <div style={{ display: 'none' }}>
                 <Shield className="w-12 h-12 text-indigo-600 mr-2" />
                 <Clock className="w-12 h-12 text-indigo-600" />
               </div>
-              <h1 className="text-3xl font-bold text-gray-800">TimeClock Pro</h1>
-              <p className="text-gray-600 mt-2">Oregon Compliant · Supabase Powered</p>
             </div>
-
-            {alert && (
-              <div className={`mb-4 p-3 rounded-lg ${
-                alert.type === 'success' ? 'bg-green-100 text-green-800' : 
-                alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
-              }`}>
-                {alert.message}
-              </div>
-            )}
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Employee Number
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={employeeNumber}
-                  onChange={(e) => setEmployeeNumber(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
-                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none text-center text-2xl tracking-wider"
-                  placeholder="Enter number"
-                  disabled={loading}
-                  autoFocus
-                />
-              </div>
-
-              {employeeNumber.toLowerCase() === 'admin' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Admin Password
-                  </label>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
-                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:outline-none text-center text-2xl"
-                    placeholder="Password"
-                    disabled={loading}
-                  />
-                </div>
-              )}
-
-              <button
-                onClick={handleLogin}
-                disabled={loading}
-                className="w-full bg-indigo-600 text-white py-4 rounded-lg font-semibold text-lg hover:bg-indigo-700 transition disabled:bg-gray-400"
-              >
-                {loading ? 'Please Wait...' : 
-                 employeeNumber.toLowerCase() === 'admin' ? 'Admin Login' : 'Clock In/Out'}
-              </button>
-            </div>
-
-            <div className="mt-8 p-4 bg-blue-50 rounded-lg">
-              <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center">
-                <Shield className="w-4 h-4 mr-1" />
-                Instructions:
-              </p>
-              <div className="text-xs text-gray-600 space-y-1">
-                <p><strong>Employees:</strong> Enter your employee number to clock in/out</p>
-                <p><strong>Administrators:</strong> Enter "admin" for management access</p>
-              </div>
-            </div>
+            
+            {/* Company Name */}
+            <h1 className="text-3xl font-bold text-gray-800">Nicebadge</h1>
+            <p className="text-gray-600 mt-2">Timeclock</p>
           </div>
-        </div>
-      </div>
-    );
-  }
+
+          {alert && (
+            <div className={`mb-4 p-3 rounded-lg ${
+              alert.type === 'success' ? 'bg-green-100 text-green-800' : 
+              alert.type === 'info' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+            }`}>
+              {alert.message}
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {/* ... rest of your login form ... */}
 
   // EMPLOYEE VIEW
   if (view === 'employee') {
